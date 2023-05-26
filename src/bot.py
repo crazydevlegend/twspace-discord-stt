@@ -1,6 +1,6 @@
+from datetime import datetime
 import subprocess
 import threading
-import time
 import discord
 import os
 from discord import app_commands
@@ -13,22 +13,65 @@ logger = log.setup_logger(__name__)
 isPrivate = False
 
 
-async def audio_to_text(interaction):
-    audio_file = open("./downloads/downloaded.m4a", "rb")
-    transcript = openai.Audio.transcribe(
-        "whisper-1",
-        audio_file,
+def download_twitter_space(url, output):
+    try:
+        os.environ["PATH"] += os.pathsep + os.getenv("FFMPEG_BIN_PATH")
+        download_process = subprocess.Popen(
+            ["twspace_dl ", "-i", url, "-o", "downloads/" + output],
+        )
+        download_process.wait()
+        return True
+    except:
+        print("An exception occurred while downloading Twitter space")
+        return False
+
+
+def convert_audio_to_text(filename):
+    try:
+        audio_file = open("downloads/" + filename + ".m4a", "rb")
+        transcript = openai.Audio.transcribe(
+            "whisper-1",
+            audio_file,
+        )
+        text_file = open("downloads/" + filename + ".txt", "wb")
+        text_file.write(str.encode(transcript.text))
+        text_file.close()
+        return True
+    except:
+        print("An exception occurred while transcribing audio file")
+        return False
+
+
+def process_twitter_space(client, interaction, url):
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+    message = ""
+    asyncio.run_coroutine_threadsafe(
+        interaction.response.send_message("Starting download..."), client.loop
     )
-    await interaction.response.send_message("```" + transcript.text + "```")
+    downloaded = download_twitter_space(url, timestamp)
+    message = "Downloaded successfully!" if downloaded else "Download failed!"
+    logger.info(message)
+    asyncio.run_coroutine_threadsafe(
+        interaction.followup.send(message, ephemeral=True), client.loop
+    )
+    if not downloaded:
+        return
 
+    converted = convert_audio_to_text(timestamp)
+    message = "Transcribed successfully!" if converted else "Transcription failed!"
+    logger.info(message)
+    asyncio.run_coroutine_threadsafe(
+        interaction.followup.send(message, ephemeral=True), client.loop
+    )
+    if not converted:
+        return
 
-def download_twitter_space(process, interaction):
-    stdout, stderr = process.communicate()  # This will block until process completes
-    logger.info(f"Download completed")
-    # print("Subprocess completed. Return code:", process.returncode)
-    print("Output:", stdout.decode())
-    print("Errors:", stderr.decode())
-    asyncio.run(audio_to_text(interaction))
+    text_file = open("downloads/" + timestamp + ".txt", "rb")
+    result = f"***{url}***\n" + "```" + text_file.read().decode() + "```"
+    asyncio.run_coroutine_threadsafe(
+        interaction.followup.send(result, ephemeral=True), client.loop
+    )
 
 
 class aclient(discord.Client):
@@ -68,21 +111,15 @@ def run_discord_bot():
             f"\x1b[31m{username}\x1b[0m : /transpile [{message}] in ({channel})"
         )
 
-        try:
-            timestamp = time.time()
-            os.environ["PATH"] += os.pathsep + os.getenv("FFMPEG_BIN_PATH")
-            download_process = subprocess.Popen(
-                ["twspace_dl ", "-i", message, "-o", "./downloads/downloaded"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            # Start a new thread to monitor the subprocess
-            monitor_thread = threading.Thread(
-                target=download_twitter_space, args=(download_process, interaction)
-            )
-            monitor_thread.start()
-        except Exception as e:
-            print(e)
+        process_thread = threading.Thread(
+            target=process_twitter_space,
+            args=(
+                client,
+                interaction,
+                message,
+            ),
+        )
+        process_thread.start()
 
     TOKEN = os.getenv("DISCORD_BOT_TOKEN")
     client.run(TOKEN)
